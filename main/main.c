@@ -7,15 +7,9 @@
 // #include "driver/gpio.h"
 // #include "sdkconfig.h"
 #include "esp_log.h"
-
-// #include "driver/dac_oneshot.h"
+#include "driver/dac.h"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_check.h"
-
-#define EXAMPLE_DAC_CHAN0_ADC_CHAN          ADC_CHANNEL_8   // GPIO25, same as DAC channel 0
-#define EXAMPLE_DAC_CHAN1_ADC_CHAN          ADC_CHANNEL_9   // GPIO26, same as DAC channel 1
-#define EXAMPLE_ADC_WIDTH                   ADC_WIDTH_BIT_9
-#define EXAMPLE_ADC_ATTEN                   ADC_ATTEN_DB_11
 
 #define GET_STATUS 0xC1
 #define SET_PERPHS 0xC2
@@ -52,19 +46,24 @@ static void loop_task(void *arg)
     ESP_ERROR_CHECK(uart_param_config(MESSAGING_UART_PORT_NUM, &uart_config));
 
     // initialize the ADC
-    adc_oneshot_unit_handle_t adc2_handle;
+    adc_oneshot_unit_handle_t adc_handle;
     adc_oneshot_unit_init_cfg_t adc_cfg = {
-        .unit_id = ADC_UNIT_2,
+        .unit_id = ADC_UNIT_1,
         .ulp_mode = false,
     };
-    ESP_ERROR_CHECK(adc_oneshot_new_unit(&adc_cfg, &adc2_handle));
+    ESP_ERROR_CHECK(adc_oneshot_new_unit(&adc_cfg, &adc_handle));
     adc_oneshot_chan_cfg_t chan_cfg = {
-        .atten = EXAMPLE_ADC_ATTEN,
-        .bitwidth = ADC_BITWIDTH_DEFAULT,
+        .atten = ADC_ATTEN_DB_11,
+        .bitwidth = ADC_BITWIDTH_9,
     };
-    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc2_handle, EXAMPLE_DAC_CHAN0_ADC_CHAN, &chan_cfg));
-    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc2_handle, EXAMPLE_DAC_CHAN1_ADC_CHAN, &chan_cfg));
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc_handle, ADC_CHANNEL_6, &chan_cfg)); // GPIO34
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc_handle, ADC_CHANNEL_7, &chan_cfg)); // GPIO35
     int adc_chan_value[2];
+
+    // initialize the DAC
+    dac_output_enable(DAC_CHANNEL_1);
+    //approx 0.78 of VDD_A voltage (VDD * 200 / 255). For VDD_A 3.3V, this is 2.59V
+    dac_output_voltage(DAC_CHANNEL_1, 0);
 
     // Configure a temporary buffer for the incoming data
     uint8_t *data = (uint8_t *) malloc(BUF_SIZE);
@@ -82,6 +81,7 @@ static void loop_task(void *arg)
     static uint32_t print_len_gt_1_count=0;
     static uint32_t print_unrec_count=0;
     static uint32_t print_set_perphs_count=0;
+    static uint32_t get_status_count=0;
     
     while (1) {
         memset(data,0,8);
@@ -91,13 +91,17 @@ static void loop_task(void *arg)
         if (len) {
             if (data[0] == GET_STATUS)
             {
-                ESP_ERROR_CHECK(adc_oneshot_read(adc2_handle, EXAMPLE_DAC_CHAN0_ADC_CHAN, &adc_chan_value[0]));
-                ESP_ERROR_CHECK(adc_oneshot_read(adc2_handle, EXAMPLE_DAC_CHAN1_ADC_CHAN, &adc_chan_value[1]));
+                get_status_count++;
+                ESP_ERROR_CHECK(adc_oneshot_read(adc_handle, ADC_CHANNEL_6, &adc_chan_value[0]));
+                ESP_ERROR_CHECK(adc_oneshot_read(adc_handle, ADC_CHANNEL_7, &adc_chan_value[1]));
                 //pack the adc values into the status message
                 status[2]= DATA_BIT | (adc_chan_value[0] & 0x3F);
                 status[1]= DATA_BIT | ((adc_chan_value[0]>>6) & 0x3F);
                 status[3]= DATA_BIT | (adc_chan_value[1] & 0x3F);
                 status[4]= DATA_BIT | ((adc_chan_value[1]>>6) & 0x3F);
+
+                uint8_t dac_value= get_status_count * 32;
+                dac_output_voltage(DAC_CHANNEL_1, dac_value);
 
                 uart_write_bytes(MESSAGING_UART_PORT_NUM, (const char *) status, 10);
             }
@@ -128,18 +132,6 @@ static void loop_task(void *arg)
 
 void app_main(void)
 {
-/*
-    dac_oneshot_handle_t chan_handle[2];
-    dac_oneshot_config_t chan0_cfg = {
-        .chan_id = DAC_CHAN_0,
-    };
-    ESP_ERROR_CHECK(dac_oneshot_new_channel(&chan0_cfg, &chan_handle[0]));
-
-    dac_oneshot_config_t chan1_cfg = {
-        .chan_id = DAC_CHAN_1,
-    };
-    ESP_ERROR_CHECK(dac_oneshot_new_channel(&chan1_cfg, &chan_handle[1]));
-*/
     xTaskCreate(loop_task, "loop_task", TASK_STACK_SIZE, NULL, 10, NULL);
 
 
