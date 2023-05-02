@@ -4,9 +4,18 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/uart.h"
-#include "driver/gpio.h"
-#include "sdkconfig.h"
+// #include "driver/gpio.h"
+// #include "sdkconfig.h"
 #include "esp_log.h"
+
+// #include "driver/dac_oneshot.h"
+#include "esp_adc/adc_oneshot.h"
+#include "esp_check.h"
+
+#define EXAMPLE_DAC_CHAN0_ADC_CHAN          ADC_CHANNEL_8   // GPIO25, same as DAC channel 0
+#define EXAMPLE_DAC_CHAN1_ADC_CHAN          ADC_CHANNEL_9   // GPIO26, same as DAC channel 1
+#define EXAMPLE_ADC_WIDTH                   ADC_WIDTH_BIT_9
+#define EXAMPLE_ADC_ATTEN                   ADC_ATTEN_DB_11
 
 #define GET_STATUS 0xC1
 #define SET_PERPHS 0xC2
@@ -14,8 +23,8 @@
 #define DATA_MASK 0x3F
 #define DATA_BIT 0x40
 
-#define MESSAGING_TXD_PIN 23
-#define MESSAGING_RXD_PIN 22
+#define MESSAGING_TXD_PIN 17
+#define MESSAGING_RXD_PIN 16
 #define MESSAGING_UART_PORT_NUM 2
 #define BUF_SIZE (128) //a buffer small than this causes an exception on uart_driver_install
 #define STATUS_SIZE (12) //a buffer small than this causes an exception on uart_driver_install
@@ -26,8 +35,7 @@ static const char *TAG = "LOOP";
 
 static void loop_task(void *arg)
 {
-    /* Configure parameters of an UART driver,
-     * communication pins and install the driver */
+    // initialize the UART
     uart_config_t uart_config = {
         .baud_rate = 921600,
         .data_bits = UART_DATA_8_BITS,
@@ -36,7 +44,6 @@ static void loop_task(void *arg)
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
         .source_clk = UART_SCLK_DEFAULT,
     };
-
     // the NO_CHANGE pins are for the RTS/CTS pins, which our application does not use.
     ESP_ERROR_CHECK(uart_set_pin(MESSAGING_UART_PORT_NUM, MESSAGING_TXD_PIN, 
         MESSAGING_RXD_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
@@ -44,18 +51,33 @@ static void loop_task(void *arg)
     ESP_ERROR_CHECK(uart_driver_install(MESSAGING_UART_PORT_NUM, BUF_SIZE * 2, 0, 0, NULL, 0));
     ESP_ERROR_CHECK(uart_param_config(MESSAGING_UART_PORT_NUM, &uart_config));
 
+    // initialize the ADC
+    adc_oneshot_unit_handle_t adc2_handle;
+    adc_oneshot_unit_init_cfg_t adc_cfg = {
+        .unit_id = ADC_UNIT_2,
+        .ulp_mode = false,
+    };
+    ESP_ERROR_CHECK(adc_oneshot_new_unit(&adc_cfg, &adc2_handle));
+    adc_oneshot_chan_cfg_t chan_cfg = {
+        .atten = EXAMPLE_ADC_ATTEN,
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
+    };
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc2_handle, EXAMPLE_DAC_CHAN0_ADC_CHAN, &chan_cfg));
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc2_handle, EXAMPLE_DAC_CHAN1_ADC_CHAN, &chan_cfg));
+    int adc_chan_value[2];
+
     // Configure a temporary buffer for the incoming data
     uint8_t *data = (uint8_t *) malloc(BUF_SIZE);
     uint8_t *status = (uint8_t *) malloc(STATUS_SIZE);
     memset(status,0,STATUS_SIZE);
 
+    //status 1&2: ADC0; 2&3: ADC1, 4&5:RPM0, 5&6:RPM1, 7: carousel bits; 8: temperature1; 9: tempature2
     status[0]= STATUS;
     //test data:
     status[1]= DATA_BIT | 0x04; //0x0123
     status[2]= DATA_BIT | 0x23;
     status[3]= DATA_BIT | 0x3F; //0xFED
     status[4]= DATA_BIT | 0x2D;
-    //status 1&2: ADC0; 2&3: ADC1, 4&5:RPM0, 5&6:RPM1, 7: carousel bits; 8: temperature1; 9: tempature2
 
     static uint32_t print_len_gt_1_count=0;
     static uint32_t print_unrec_count=0;
@@ -69,6 +91,14 @@ static void loop_task(void *arg)
         if (len) {
             if (data[0] == GET_STATUS)
             {
+                ESP_ERROR_CHECK(adc_oneshot_read(adc2_handle, EXAMPLE_DAC_CHAN0_ADC_CHAN, &adc_chan_value[0]));
+                ESP_ERROR_CHECK(adc_oneshot_read(adc2_handle, EXAMPLE_DAC_CHAN1_ADC_CHAN, &adc_chan_value[1]));
+                //pack the adc values into the status message
+                status[2]= DATA_BIT | (adc_chan_value[0] & 0x3F);
+                status[1]= DATA_BIT | ((adc_chan_value[0]>>6) & 0x3F);
+                status[3]= DATA_BIT | (adc_chan_value[1] & 0x3F);
+                status[4]= DATA_BIT | ((adc_chan_value[1]>>6) & 0x3F);
+
                 uart_write_bytes(MESSAGING_UART_PORT_NUM, (const char *) status, 10);
             }
             else if (data[0] == SET_PERPHS)
@@ -98,5 +128,19 @@ static void loop_task(void *arg)
 
 void app_main(void)
 {
+/*
+    dac_oneshot_handle_t chan_handle[2];
+    dac_oneshot_config_t chan0_cfg = {
+        .chan_id = DAC_CHAN_0,
+    };
+    ESP_ERROR_CHECK(dac_oneshot_new_channel(&chan0_cfg, &chan_handle[0]));
+
+    dac_oneshot_config_t chan1_cfg = {
+        .chan_id = DAC_CHAN_1,
+    };
+    ESP_ERROR_CHECK(dac_oneshot_new_channel(&chan1_cfg, &chan_handle[1]));
+*/
     xTaskCreate(loop_task, "loop_task", TASK_STACK_SIZE, NULL, 10, NULL);
+
+
 }
