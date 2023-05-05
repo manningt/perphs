@@ -21,7 +21,8 @@
 #define MESSAGING_RXD_PIN 16
 #define MESSAGING_UART_PORT_NUM 2
 #define BUF_SIZE (128) //a buffer small than this causes an exception on uart_driver_install
-#define STATUS_SIZE (12) //a buffer small than this causes an exception on uart_driver_install
+#define STATUS_SIZE (12) //includes message_type byte
+#define COMMAND_SIZE (9)
 
 #define TASK_STACK_SIZE  2048
 static const char *TAG = "LOOP";
@@ -84,7 +85,7 @@ static void loop_task(void *arg)
     static uint32_t get_status_count=0;
     
     while (1) {
-        memset(data,0,8);
+        memset(data,0,COMMAND_SIZE-1);
         //the read_bytes(port, buffer, #bytes to read, timeout in ticks, where a tick is 1 mSec)
         //https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/peripherals/uart.html#uart-api-running-uart-communication
         int len = uart_read_bytes(MESSAGING_UART_PORT_NUM, data, 1, 10 / portTICK_PERIOD_MS);
@@ -95,29 +96,30 @@ static void loop_task(void *arg)
                 ESP_ERROR_CHECK(adc_oneshot_read(adc_handle, ADC_CHANNEL_6, &adc_chan_value[0]));
                 ESP_ERROR_CHECK(adc_oneshot_read(adc_handle, ADC_CHANNEL_7, &adc_chan_value[1]));
                 //pack the adc values into the status message
-                status[2]= DATA_BIT | (adc_chan_value[0] & 0x3F);
-                status[1]= DATA_BIT | ((adc_chan_value[0]>>6) & 0x3F);
-                status[3]= DATA_BIT | (adc_chan_value[1] & 0x3F);
-                status[4]= DATA_BIT | ((adc_chan_value[1]>>6) & 0x3F);
-
-                uint8_t dac_value= get_status_count * 32;
-                dac_output_voltage(DAC_CHANNEL_1, dac_value);
+                status[2]= DATA_BIT | (adc_chan_value[0] & DATA_MASK);
+                status[1]= DATA_BIT | ((adc_chan_value[0]>>6) & DATA_MASK);
+                status[3]= DATA_BIT | (adc_chan_value[1] & DATA_MASK);
+                status[4]= DATA_BIT | ((adc_chan_value[1]>>6) & DATA_MASK);
 
                 uart_write_bytes(MESSAGING_UART_PORT_NUM, (const char *) status, 10);
             }
             else if (data[0] == SET_PERPHS)
             {
                 print_set_perphs_count++;
-                // TODO: add loop to get next characters
-                if (print_set_perphs_count < 2)
-                    ESP_LOGI(TAG, "Received SET_PERPHS");
+                memset(data,0,COMMAND_SIZE-1);
+                int len_command = uart_read_bytes(MESSAGING_UART_PORT_NUM, data, COMMAND_SIZE-1, 10 / portTICK_PERIOD_MS);
+                uint8_t dac[2];
+                dac[0]= ((data[0] & DATA_MASK) << 6) | (data[1] & DATA_MASK);
+                dac_output_voltage(DAC_CHANNEL_1, dac[0]);
+
+                // if (print_set_perphs_count < 2)
+                    ESP_LOGI(TAG, "Received SET_PERPHS: length=%d dac[0]=%u (0x%02x)", len_command, dac[0], dac[0]);
             }
             else
             {
                 print_unrec_count++;
                 if (print_set_perphs_count < 2)
                     ESP_LOGI(TAG, "Unrecognized command=0x%02x", data[0]);
-
             }
             if (len > 1)
             {
@@ -133,6 +135,4 @@ static void loop_task(void *arg)
 void app_main(void)
 {
     xTaskCreate(loop_task, "loop_task", TASK_STACK_SIZE, NULL, 10, NULL);
-
-
 }
