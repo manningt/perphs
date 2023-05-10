@@ -56,13 +56,16 @@ static const uint8_t WHEEL_DAC[NUMBER_OF_WHEELS]= {DAC_CHANNEL_1, DAC_CHANNEL_1}
 #define COMMAND_SIZE (9)
 
 #define TASK_STACK_SIZE  2048
-static const char *TAG = "LOOP";
 
 enum WHEEL_ENUM {BOTTOM, TOP};
 enum POSITION_ENUM {ROTARY, ELEVATOR};
 
-static void loop_task(void *arg)
+uint16_t rpm[2];
+
+static void uart_task(void *arg)
 {
+    static const char *TAG = "UART";
+
     // initialize the UART
     uart_config_t uart_config = {
         .baud_rate = 921600,
@@ -194,7 +197,45 @@ static void loop_task(void *arg)
     }
 }
 
+static void rpms_task(void *arg)
+{
+    static const char *TAG = "RPMS";
+    esp_log_level_set(TAG, ESP_LOG_DEBUG);
+    static TickType_t xDelayPeriod = pdMS_TO_TICKS(10);  //read counters every N milliseconds 
+    TickType_t xLastExecutionTime= xTaskGetTickCount();
+    TickType_t xLastReadCountTime= xLastExecutionTime;
+    static uint32_t read_count=0;
+
+    while(true)
+	{
+        read_count++;
+        if ((read_count % 2) == 0)
+        {
+            ESP_LOGD(TAG, "read_count=%lu lastReadMillis=%lu", read_count, pdTICKS_TO_MS(xTaskGetTickCount()-xLastReadCountTime));
+            xLastReadCountTime= xTaskGetTickCount();
+        }
+        //read pulse_counter, get time, calculate rpms
+
+		vTaskDelayUntil( &xLastExecutionTime, 100/xDelayPeriod );
+    }
+}
+
+
 void app_main(void)
 {
-    xTaskCreate(loop_task, "loop_task", TASK_STACK_SIZE, NULL, 10, NULL);
+    static const char *TAG = "MAIN";
+    esp_log_level_set(TAG, ESP_LOG_DEBUG);
+
+    int rc= xTaskCreate(uart_task, "uart_task", TASK_STACK_SIZE, NULL, 10, NULL); //10 is the priority
+    if (rc != pdPASS)
+        ESP_LOGE(TAG, "Fail: create uart_task: rc=%d", rc);
+    else
+        ESP_LOGD(TAG, "OK: created uart_task");
+
+    xTaskCreate(rpms_task, "rpms_task", TASK_STACK_SIZE, NULL, 11, NULL);
+/*
+    the following things are in the freeRTOS tutorial, but it appears that esp-idf does then automatically:
+    vTaskStartScheduler();
+    for( ;; ); //if this is in the code, then watchdog timeouts occur
+*/
 }
